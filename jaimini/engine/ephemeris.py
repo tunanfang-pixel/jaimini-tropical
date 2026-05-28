@@ -6,6 +6,7 @@ No ayanamsa applied - pure tropical (Sayana) positions.
 
 from skyfield.api import load, load_file
 import os
+import sys
 import numpy as np
 from .time_utils import zodiac_position, ZODIAC
 
@@ -31,13 +32,34 @@ def _get_eph():
     """Load ephemeris data. Downloads DE421 on first use (~17MB)."""
     global _eph
     if _eph is None:
-        # Check for local ephemeris file first
+        # Search paths in order:
+        # 1. Bundled with PyInstaller (sys._MEIPASS)
+        # 2. Local project data directory
+        # 3. Same directory as the executable
+        # 4. Skyfield auto-download from NASA
+        search_paths = []
+
+        # PyInstaller bundle path
+        if getattr(sys, 'frozen', False):
+            bundle_path = os.path.join(sys._MEIPASS, 'jaimini', 'data', 'de421.bsp')
+            search_paths.append(bundle_path)
+            exe_dir = os.path.join(os.path.dirname(sys.executable), 'de421.bsp')
+            search_paths.append(exe_dir)
+
+        # Local development path
         local_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'de421.bsp')
-        if os.path.exists(local_path):
-            _eph = load_file(local_path)
-        else:
-            # Download from NASA (cached locally after first download)
+        search_paths.append(os.path.normpath(local_path))
+
+        found = False
+        for path in search_paths:
+            if os.path.exists(path):
+                _eph = load_file(path)
+                found = True
+                break
+
+        if not found:
             _eph = load('de421.bsp')
+
         global _earth
         _earth = _eph['earth']
     return _eph

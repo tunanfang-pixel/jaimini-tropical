@@ -42,7 +42,6 @@ Jaimini占星文件/
 # Original micrograd files (separate project)
 test.py
 run.sh
-requirements.txt
 
 # Claude internal
 .claude/
