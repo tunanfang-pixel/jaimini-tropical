@@ -1,5 +1,7 @@
 """Chart data structure — integrates planetary positions, houses, and Jaimini analysis."""
 
+from datetime import datetime
+
 from ..engine.ephemeris import get_all_planets, get_rahu_ketu
 from ..engine.houses import calc_houses, calc_ascendant, WHOLE_SIGN, HOUSE_SYSTEMS
 from ..engine.time_utils import parse_dms, format_dms, zodiac_position, local_to_utc, parse_timezone, ZODIAC, ZODIAC_FULL
@@ -9,6 +11,7 @@ from ..core.padas import calc_all_padas, calc_upapada, pada_report
 from ..core.lagnas import calc_all_special_lagnas, lagna_report
 from ..core.divisions import calc_all_divisions, division_report
 from ..core.argala import calc_all_argalas, argala_report, classify_argala_rajayoga, calc_karakamsa_rajayoga
+from ..panchanga.panchanga import calc_panchanga, format_panchanga
 
 
 class Chart:
@@ -59,6 +62,14 @@ class Chart:
             self.utc_year, self.utc_month, self.utc_day,
             self.utc_hour, self.utc_minute, self.utc_second,
             lat, lon, system=house_system
+        )
+
+        # Panchanga (five limbs of Vedic timekeeping)
+        local_dt = datetime(year, month, day, hour, minute, second)
+        self.panchanga = calc_panchanga(
+            self.planets['Su']['lon'],
+            self.planets['Mo']['lon'],
+            local_dt.weekday()
         )
 
         # Jaimini analysis
@@ -132,6 +143,221 @@ class Chart:
         idx = int(self.ascendant // 30)
         return idx, ZODIAC[idx]
 
+    def to_dict(self):
+        """Serialize chart data to a JSON-compatible dictionary for API responses."""
+        # Planets
+        planets_dict = {}
+        for name, pos in self.planets.items():
+            planets_dict[name] = {
+                "lon": pos["lon"],
+                "lat": pos.get("lat", 0.0),
+                "speed": pos.get("speed", 0.0),
+                "retrograde": pos.get("retrograde", False),
+                "sign_idx": pos["sign_idx"],
+                "sign": pos["sign"],
+                "sign_deg": pos.get("sign_deg", pos["lon"] % 30),
+                "sign_str": pos["sign_str"],
+            }
+
+        # Houses
+        houses_list = []
+        for h in self.houses:
+            planets_in_h = self.planets_in_house(h["house"])
+            houses_list.append({
+                "house": h["house"],
+                "cusp": h["cusp"],
+                "sign_idx": h["sign_idx"],
+                "sign": h["sign"],
+                "sign_deg": h["sign_deg"],
+                "sign_str": h["sign_str"],
+                "planets": planets_in_h,
+            })
+
+        # Karakas
+        karakas_7_list = []
+        for k in self.karakas_7:
+            karakas_7_list.append({
+                "planet": k["planet"],
+                "karaka": k["karaka"],
+                "karaka_full": k["karaka_full"],
+                "degree_in_sign": k["degree_in_sign"],
+                "sign": k["sign"],
+                "sign_idx": k["sign_idx"],
+                "lon": k["lon"],
+                "rank": k["rank"],
+            })
+
+        # Dasha years
+        dasha_years_list = []
+        for d in self.dasha_years:
+            dasha_years_list.append({
+                "sign_idx": d["sign_idx"],
+                "sign_name": d["sign_name"],
+                "lord": d["lord"],
+                "years": d["years"],
+            })
+
+        # Chara Dasha periods (all 12 mahadashas with full antars)
+        dasha_periods = []
+        for p in self.chara_dasha:
+            antars = []
+            if hasattr(p, "sub_periods") and p.sub_periods:
+                for a in p.sub_periods:
+                    antars.append({
+                        "sign_idx": a.sign_idx,
+                        "sign_name": a.sign_name,
+                        "lord": a.lord,
+                        "years": round(a.years, 3),
+                    })
+            dasha_periods.append({
+                "sign_idx": p.sign_idx,
+                "sign_name": p.sign_name,
+                "lord": p.lord,
+                "years": p.years,
+                "start_jd": p.start_date,
+                "end_jd": p.end_date,
+                "antar": antars,
+            })
+
+        # Padas
+        padas_dict = {}
+        for h_num, pada in self.padas.items():
+            padas_dict[str(h_num)] = {
+                "house": h_num,
+                "name": pada.get("name", ""),
+                "sign_idx": pada["sign_idx"],
+                "sign": pada["sign"],
+                "sign_full": pada.get("sign_full", pada["sign"]),
+                "lord": pada["lord"],
+            }
+
+        # Upapada
+        upapada_dict = {
+            "sign_idx": self.upapada["sign_idx"],
+            "sign": self.upapada["sign"],
+            "sign_full": self.upapada["sign_full"],
+            "lord": self.upapada["lord"],
+            "description": self.upapada.get("description", ""),
+        }
+
+        # Special lagnas
+        lagnas_dict = {}
+        for name, lagna in self.special_lagnas.items():
+            if isinstance(lagna, dict) and "sign_idx" in lagna and "sign" in lagna:
+                lagnas_dict[name] = {
+                    "sign_idx": lagna["sign_idx"],
+                    "sign": lagna["sign"],
+                    "sign_full": lagna.get("sign_full", lagna["sign"]),
+                    "lord": lagna.get("lord", ""),
+                }
+            else:
+                lagnas_dict[name] = lagna
+
+        # Divisions
+        divisions_dict = {}
+        for div_name, div_data in self.divisions.items():
+            div_planets = {}
+            for p_name, p_data in div_data.items():
+                div_planets[p_name] = {
+                    "sign_idx": p_data["sign_idx"],
+                    "sign": p_data["sign"],
+                }
+            divisions_dict[div_name] = div_planets
+
+        # Argalas (full detail)
+        argalas_full = {}
+        for h_num, arg in self.argalas.items():
+            primary = {}
+            for key in ["H2", "H4", "H11"]:
+                if key in arg.get("primary", {}):
+                    p = arg["primary"][key]
+                    primary[key] = {
+                        "planet": p.get("planet", ""),
+                        "house": p.get("house", 0),
+                    }
+            virodh = {}
+            for key in ["H12", "H10", "H3"]:
+                if key in arg.get("virodhargala", {}):
+                    v = arg["virodhargala"][key]
+                    virodh[key] = {
+                        "planet": v.get("planet", ""),
+                        "house": v.get("house", 0),
+                    }
+            secondary = {}
+            for key in ["H5", "H9"]:
+                if key in arg.get("secondary", {}):
+                    s = arg["secondary"][key]
+                    secondary[key] = {
+                        "planet": s.get("planet", ""),
+                        "house": s.get("house", 0),
+                    }
+            argalas_full[str(h_num)] = {
+                "ref_sign": arg.get("ref_sign", ""),
+                "primary": primary,
+                "secondary": secondary,
+                "specific": arg.get("specific", {}),
+                "virodhargala": virodh,
+                "argala_count": arg.get("argala_count", 0),
+                "virodhargala_count": arg.get("virodhargala_count", 0),
+                "net_result": arg.get("net_result", "neutral"),
+            }
+
+        # Ascendant
+        asc_sign_idx = int(self.ascendant // 30)
+        asc_sign_deg = self.ascendant % 30
+
+        return {
+            "algorithm": {
+                "engine": "Jaimini Tropical Astrology Engine",
+                "version": "1.0.0",
+                "tradition": "Jaimini (Jyotish-Prasana, Jaimini Sutramritam)",
+                "zodiac": "Tropical (Sayana) — no Ayanamsa applied",
+                "house_system": HOUSE_SYSTEMS.get(self.house_system, self.house_system),
+                "ephemeris": "NASA JPL DE421 (Skyfield) — precision ~0.001 arcsec",
+                "karaka_system": "7-planet Chara Karaka (Rangacharya system, excluding Rahu)",
+                "dasha_system": "Jaimini Chara Dasha (Prakriti Chakra, sign-based, 9th-house start)",
+                "pada_system": "Jaimini Arudha Padas (with exception rule: pada in 1st/7th → shift to 10th)",
+                "division_system": "Jaimini Varga (D-9 Navamsa, D-3 Drekkana, D-12 Dwadashamsha) — 阳顺阴逆",
+                "argala_system": "Jaimini Argala/Virodhargala (houses 2/4/11 primary, 12/10/3 obstruction)",
+                "note": "纯 Jaimini 回归黄道体系，不含 Parashara 内容 (无 Vimshottari, 无 Shadbala, 无行星相位, 无不等宫制)",
+            },
+            "input": {
+                "date": f"{self.utc_year:04d}-{self.utc_month:02d}-{self.utc_day:02d}",
+                "time": f"{self.utc_hour:02d}:{self.utc_minute:02d}:{self.utc_second:06.3f}",
+                "tz": self.tz_offset,
+                "lat": self.lat,
+                "lon": self.lon,
+                "name": self.name,
+                "house_system": self.house_system,
+            },
+            "ascendant": {
+                "lon": self.ascendant,
+                "sign_idx": asc_sign_idx,
+                "sign": ZODIAC[asc_sign_idx],
+                "sign_deg": asc_sign_deg,
+                "sign_str": f"{ZODIAC[asc_sign_idx]} {asc_sign_deg:.2f}°",
+            },
+            "planets": planets_dict,
+            "houses": houses_list,
+            "panchanga": self.panchanga,
+            "karakas_7": karakas_7_list,
+            "dasha_years": dasha_years_list,
+            "chara_dasha": dasha_periods,
+            "padas": padas_dict,
+            "upapada": upapada_dict,
+            "special_lagnas": lagnas_dict,
+            "divisions": divisions_dict,
+            "argalas": argalas_full,
+            "lagna_rajayoga": self.lagna_rajayoga,
+            "karakamsa_rajayoga": {
+                "karakamsa_sign": self.karakamsa_rajayoga["karakamsa_sign"],
+                "ak_planet": self.karakamsa_rajayoga["ak_planet"],
+                "is_rajayoga": self.karakamsa_rajayoga["is_rajayoga"],
+                "yoga_level": self.karakamsa_rajayoga["yoga_level"],
+                "description": self.karakamsa_rajayoga["description"],
+            },
+        }
+
     def planets_in_house(self, house_num):
         """Return list of planets in a given house (1-12)."""
         h = self.houses[house_num - 1]
@@ -166,6 +392,13 @@ class Chart:
         lines.append(f"{self.name}" if self.name else "Chart Summary")
         lines.append("=" * 70)
         lines.append(f"Ascendant: {asc_str}  |  House System: {HOUSE_SYSTEMS.get(self.house_system, self.house_system)}")
+        lines.append("")
+
+        # Panchanga
+        lines.append("-" * 70)
+        lines.append("PANCHANGA (五支历法)")
+        lines.append("-" * 70)
+        lines.append(format_panchanga(self.panchanga))
         lines.append("")
 
         # Planetary Positions
