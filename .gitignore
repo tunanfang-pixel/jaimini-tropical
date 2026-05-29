@@ -38,6 +38,7 @@ pipeline.py
 run.bat
 pdf_translate.py
 Jaimini占星文件/
+古典占星著作/
 
 # Original micrograd files (separate project)
 test.py
